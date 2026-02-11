@@ -1,5 +1,5 @@
 <h2 align="center" style="border:0 !important; border-bottom:0 !important; box-shadow:none !important; margin-top:8px;">
-  Anchored Decoding: <br>
+  ⚓ Anchored Decoding: ⚓ <br>
   Provably Reducing Copyright Risk for Any Language Model
 </h2>
 

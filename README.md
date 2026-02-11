@@ -38,6 +38,17 @@ If you find our work helpful, please cite us as:
 
 ## Installation
 
+### ✨ PyPI install
+
+Our code is hosted on [PyPI](https://pypi.org/project/anchoreddecode/0.1.0/)! The latest version is `0.1.0`. Just run the following command:
+
+```bash
+pip install anchoreddecode
+```
+
+
+### ✨ Local install
+
 Please install [uv](https://docs.astral.sh/uv/getting-started/installation/) and clone this repository. Inside this repo, please run:
 
 ```bash

@@ -2,7 +2,7 @@ import gc
 import os
 import time
 import warnings
-from typing import Any, List, Optional, Tuple
+from typing import Any, List, Optional, Tuple, Callable
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -60,6 +60,7 @@ class AnchoredDecodingFactory:
         max_memory: Optional[dict] = None,
         load_in_4bit: bool = False,
         load_in_8bit: bool = False,
+        combination_logic: Optional[Callable] = None,
         **kwargs,
     ):
         """
@@ -173,6 +174,7 @@ class AnchoredDecodingFactory:
             prefix_n=prefix_n,
             log_kl_stats=log_kl_stats,
             device=device,
+            combination_logic=combination_logic
         )
 
     def __init__(
@@ -188,6 +190,7 @@ class AnchoredDecodingFactory:
         device: Optional[torch.device] = None,
         eps_kl: float = 1e-4,
         solver_max_iter: int = 20,
+        combination_logic: Optional[Callable] = None
     ) -> None:
         """Initialize the AnchoredDecodingFactory with two language models.
 
@@ -198,6 +201,7 @@ class AnchoredDecodingFactory:
             verbose (bool, optional): If True, prints detailed logs. Defaults to False.
             eps_kl (float, optional): Numerical slack for KL constraint checks. Defaults to 1e-4.
             solver_max_iter (int, optional): Max iterations for the Newton solver. Defaults to 20.
+            combination_logic (callable, optional): Function to combine safe and risky logits to give final logits. Defaults to linear combination (Anchored Decoding)
         """
         self.config = safe_model.config
         self.safe_model = safe_model
@@ -207,6 +211,7 @@ class AnchoredDecodingFactory:
         self.prefix_n = prefix_n
         self.eps_kl = eps_kl
         self.solver_max_iter = solver_max_iter
+        self.combination_logic = combination_logic
 
         assert self.k_radius >= 0.0, "k_radius must be positive"
 
@@ -877,27 +882,21 @@ class AnchoredDecodingFactory:
 
             # Determine per-example k_t (banked KL)
             if k_radius == 0.0:
-                bc = torch.ones((B, 1), device=device, dtype=dtype)
-                bd = torch.zeros((B, 1), device=device, dtype=dtype)
                 k_t = torch.zeros((B,), device=device, dtype=torch.float32)
                 budget_so_far = torch.zeros(
                     (B,), device=device, dtype=torch.float32
                 )  # no budget in safe-only mode
                 # Compute log probs once for edge case
-                log_pc = F.log_softmax(safe_logits.float(), dim=-1)
-                log_pd = F.log_softmax(risky_logits.float(), dim=-1)
+                log_p = F.log_softmax(safe_logits.float(), dim=-1)
 
             elif k_radius == -1.0:
                 # risky-only (NO guarantee)
-                bc = torch.zeros((B, 1), device=device, dtype=dtype)
-                bd = torch.ones((B, 1), device=device, dtype=dtype)
                 k_t = torch.full((B,), float("inf"), device=device, dtype=torch.float32)
                 budget_so_far = torch.full(
                     (B,), float("inf"), device=device, dtype=torch.float32
                 )  # infinite budget in risky-only mode
                 # Compute log probs once for edge case
-                log_pc = F.log_softmax(safe_logits.float(), dim=-1)
-                log_pd = F.log_softmax(risky_logits.float(), dim=-1)
+                log_p = F.log_softmax(risky_logits.float(), dim=-1)
 
             else:
                 # Budget accrued so far: (t_gen+1)*k + init_budget
@@ -913,22 +912,28 @@ class AnchoredDecodingFactory:
                 k_t = remaining * unfinished_sequences.float()  # [B] fp32
 
                 # Solver returns bc, bd AND cached log_pc, log_pd (avoids redundant log_softmax)
-                bc, bd, log_pc, log_pd = self.solve_optimization_newton(
-                    safe_logits, risky_logits, k_t
-                )
+                if self.combination_logic is not None:
+                    logits = self.combination_logic(safe_logits, risky_logits, k_t)
+                    log_p = F.log_softmax(logits.float(), dim=-1)
+                else:
+                    bc, bd, log_pc, log_pd = self.solve_optimization_newton(
+                        safe_logits, risky_logits, k_t
+                    )
 
-            # Fused distribution in decoding space (reuses cached log_pc, log_pd)
-            log_p, log_pc, next_token_logits = self._get_logp_from_weights(
-                bc, bd, log_pc, log_pd
-            )
-            log_pc_realized = log_pc
+                    # Fused distribution in decoding space (reuses cached log_pc, log_pd)
+                    log_p, log_pc, next_token_logits = self._get_logp_from_weights(
+                        bc, bd, log_pc, log_pd
+                    )
+
+            log_pc = F.log_softmax(safe_logits.float(), dim=-1)
+            log_pd = F.log_softmax(risky_logits.float(), dim=-1)
 
             # Local KL check + BANK the spend (do this BEFORE logging so cum_kl_spent is up-to-date)
             kl_step = torch.zeros(
                 (B,), device=device, dtype=torch.float32
             )  # default for edge cases
             if k_radius not in (0.0, -1.0):
-                kl_step = self._safe_kl_terms(log_p, log_pc_realized).float()  # [B]
+                kl_step = self._safe_kl_terms(log_p, log_pc).float()  # [B]
 
                 mask = unfinished_sequences.bool()
                 # Solver should enforce KL <= k_t; allow tiny numerical slack.
@@ -959,16 +964,6 @@ class AnchoredDecodingFactory:
                         "step": step_count,
                         "kl_to_safe": kl_to_safe.detach().cpu().tolist(),
                         "kl_to_risky": kl_to_risky.detach().cpu().tolist(),
-                        "bc": (
-                            bc.squeeze(-1).detach().cpu().tolist()
-                            if bc.dim() > 1
-                            else bc.detach().cpu().tolist()
-                        ),
-                        "bd": (
-                            bd.squeeze(-1).detach().cpu().tolist()
-                            if bd.dim() > 1
-                            else bd.detach().cpu().tolist()
-                        ),
                         "k_t": k_t.detach()
                         .cpu()
                         .tolist(),  # adaptive per-step budget (remaining budget for this step)
@@ -985,9 +980,6 @@ class AnchoredDecodingFactory:
 
             if self.verbose:
                 if k_radius not in (0.0, -1.0):
-                    print(
-                        f"[DEBUG] bc: {bc.squeeze(-1).tolist()}, bd: {bd.squeeze(-1).tolist()}"
-                    )
                     print(
                         f"[DEBUG] step {step_count}: KL(fused || safe) = {kl_step.detach().cpu().tolist()} "
                         f"(mean={kl_step.mean().item():.4f})"
@@ -1504,6 +1496,7 @@ def generate(
         "seed",
         "load_in_4bit",
         "load_in_8bit",
+        "combination_logic"
     }
 
     factory_kwargs = {k: v for k, v in kwargs.items() if k in factory_args}

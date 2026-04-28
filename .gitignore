@@ -1,0 +1,8 @@
+not_so_useful_plots/
+__pycache__/
+figures/mauve_tradeoff.png
+figures/mauve_tradeoff_loglog.png
+figures/mauve_tradeoff_gpt2_large.png
+figures/mauve_tradeoff_gpt2_large_loglog.png
+figures/mauve_tradeoff_exp_exp.png
+figures/mauve_tradeoff_gpt2_large_exp_exp.png

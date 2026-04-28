@@ -1,3 +1,13 @@
+r"""Evaluate literal-copying metrics for generated outputs.
+
+Run on every literal generation in data/ that does not already have a result file:
+    Get-ChildItem data\*_literal_gen.json | ForEach-Object { $out = Join-Path "results" ($_.Name -replace "_gen\.json$", "_results.json"); if (-not (Test-Path $out)) { python copy-bench-main\scripts\eval_literal_copying.py --input $_.FullName --output $out } }
+
+Run on a single file:
+    python copy-bench-main\scripts\eval_literal_copying.py --input data\example_literal_gen.json --output results/example_literal_results.json
+ 
+"""
+
 import json
 from tqdm import tqdm
 import os

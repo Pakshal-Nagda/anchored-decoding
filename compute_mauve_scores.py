@@ -1,10 +1,10 @@
 r"""Compute MAUVE scores for all literal generation result files.
 
-Default run, using GPT-2 features and GPU 0:
+Default run, using GPT-2-large features and GPU 0:
     python .\compute_mauve_scores.py
 
-GPT-2-large is available through the wrapper:
-    python .\compute_mauve_scores_gpt2_large.py
+GPT-2-small features:
+    python .\compute_mauve_scores.py --model gpt2 --batch_size 16
 
 Useful arguments:
     --model            MAUVE feature model, e.g. gpt2 or gpt2-large.
@@ -26,6 +26,7 @@ import re
 
 RESULTS_DIR = "results"
 MAUVE_DIR = "mauve"
+MAIN_DEFAULT_BATCH_SIZE = 8
 
 
 METHOD_LABELS = {
@@ -45,7 +46,7 @@ def load_json(path):
 
 def discover_result_files(results_dir):
     method_pattern = re.compile(
-        r"^(?P<method>[a-z0-9]+)_(?P<k>0\.1|0\.5|1|5)_literal_results\.json$"
+        r"^(?P<method>[a-z0-9]+)_(?P<k>\d+(?:\.\d+)?)_literal_results\.json$"
     )
     files = []
     for filename in sorted(os.listdir(results_dir)):
@@ -203,7 +204,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--model",
-        default="gpt2",
+        default="gpt2-large",
         help="MAUVE featurizer model, e.g. gpt2 or gpt2-large.",
     )
     parser.add_argument(
@@ -221,7 +222,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--batch_size",
         type=int,
-        default=16,
+        default=MAIN_DEFAULT_BATCH_SIZE,
         help="MAUVE featurization batch size. Lower this if you hit CUDA OOM.",
     )
     parser.add_argument(
